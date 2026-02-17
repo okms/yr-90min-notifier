@@ -1,0 +1,39 @@
+name = "yr-rain-notifier"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+# Cron: every 5 minutes
+[triggers]
+crons = ["*/5 * * * *"]
+
+# KV namespace for persisting rain state between invocations.
+# After running `wrangler kv:namespace create RAIN_STATE`, paste the IDs below.
+[[kv_namespaces]]
+binding = "RAIN_STATE"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+preview_id = "REPLACE_WITH_KV_NAMESPACE_PREVIEW_ID"
+
+# --- Configuration variables ---
+# Override any of these with `wrangler secret put` for sensitive values,
+# or keep them here as plain vars for non-sensitive config.
+[vars]
+# Location (Oslo city centre)
+LAT = "59.9133"
+LON = "10.7389"
+
+# ntfy.sh topic name — change this to something unguessable!
+# Everyone who subscribes to this topic receives notifications.
+NTFY_TOPIC = "yr-rain-oslo-CHANGEME"
+
+# ntfy.sh base URL (use https://ntfy.sh for the public server,
+# or your own self-hosted URL e.g. https://ntfy.example.com)
+NTFY_BASE_URL = "https://ntfy.sh"
+
+# Precipitation threshold in mm/h — below this is considered "dry"
+PRECIP_THRESHOLD = "0.1"
+
+# Minimum consecutive dry minutes to count as a meaningful dry window
+DRY_WINDOW_MIN = "15"
+
+# Suppress duplicate notifications of the same type within this window (minutes)
+DEDUP_WINDOW_MIN = "30"
