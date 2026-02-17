@@ -126,8 +126,8 @@ async function checkRain(env: Env): Promise<void> {
       const duration = dryWindow.durationMinutes;
       notification = {
         type: "rain_stopping",
-        title: "Oppholder snart ☀️",
-        body: `Oppholder om ca. ${startsIn} min — tørt i minst ${duration} min`,
+        title: `Opphold om ${startsIn} min ☀️`,
+        body: `Tørt i minst ${duration} min`,
         tags: ["partly_sunny_rain"],
         priority: "default",
       };
