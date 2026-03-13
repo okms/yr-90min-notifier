@@ -22,6 +22,7 @@ export interface Env {
   PRECIP_THRESHOLD: string; // mm/h, below this = "dry"
   DRY_WINDOW_MIN: string;   // min consecutive dry minutes to count as a dry window
   DEDUP_WINDOW_MIN: string; // suppress same notification type within this window
+  LOCATION_URL: string;     // URL opened when notification is tapped
 }
 
 interface NowcastTimestep {
@@ -286,6 +287,7 @@ async function sendNtfy(env: Env, payload: NotificationPayload): Promise<void> {
       "X-Title": payload.title,
       "X-Priority": payload.priority === "high" ? "4" : "3",
       "X-Tags": payload.tags.join(","),
+      "X-Click": env.LOCATION_URL,
     },
     body: payload.body,
   });

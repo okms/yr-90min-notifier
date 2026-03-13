@@ -29,6 +29,9 @@ NTFY_TOPIC = "yr-rain-oslo-273a93b3e0f288df"
 # or your own self-hosted URL e.g. https://ntfy.example.com)
 NTFY_BASE_URL = "https://ntfy.sh"
 
+# URL to open when the notification is tapped (Yr location page)
+LOCATION_URL = "https://www.yr.no/nb/værvarsel/daglig-tabell/1-72837/Norge/Oslo/Oslo/Oslo"
+
 # Precipitation threshold in mm/h — below this is considered "dry"
 PRECIP_THRESHOLD = "0.1"
 
