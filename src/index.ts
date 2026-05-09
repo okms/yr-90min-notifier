@@ -60,6 +60,28 @@ type NotificationType = "rain_starting" | "rain_stopping";
 interface PersistedState {
   wasRaining: boolean;
   lastNotifications: Partial<Record<NotificationType, string>>; // type → ISO timestamp
+  diagnostics?: CheckDiagnostics;
+}
+
+interface CheckDiagnostics {
+  lastCheckedAt?: string;
+  lastErrorAt?: string;
+  lastError?: string;
+  lastForecastUpdatedAt?: string;
+  lastSeriesStart?: string;
+  lastSeriesEnd?: string;
+  lastCurrentRate?: number;
+  lastThreshold?: number;
+  lastDecision?: string;
+  lastNotificationType?: NotificationType;
+}
+
+interface CheckResult {
+  checkedAt: string;
+  currentRate: number;
+  threshold: number;
+  decision: string;
+  notificationType: NotificationType | null;
 }
 
 interface NotificationPayload {
@@ -77,7 +99,9 @@ interface NotificationPayload {
 export default {
   // Cron trigger — runs every 5 minutes
   async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(checkRain(env));
+    ctx.waitUntil(
+      checkRain(env).catch((err) => recordCheckError(env, err)),
+    );
   },
 
   // HTTP handler — useful for manual triggers and health checks
@@ -90,8 +114,16 @@ export default {
     }
 
     if (url.pathname === "/trigger" && request.method === "POST") {
-      await checkRain(env);
-      return Response.json({ ok: true, message: "Check triggered" });
+      try {
+        const result = await checkRain(env);
+        return Response.json({ ok: true, message: "Check triggered", result });
+      } catch (err) {
+        await recordCheckError(env, err);
+        return Response.json(
+          { ok: false, error: stringifyError(err) },
+          { status: 500 },
+        );
+      }
     }
 
     return new Response("yr-rain-notifier\nGET /health  POST /trigger\n", { status: 200 });
@@ -102,20 +134,22 @@ export default {
 // Core logic
 // ---------------------------------------------------------------------------
 
-async function checkRain(env: Env): Promise<void> {
+async function checkRain(env: Env): Promise<CheckResult> {
   const threshold = parseFloat(env.PRECIP_THRESHOLD);
   const dryWindowMin = parseInt(env.DRY_WINDOW_MIN, 10);
   const dedupWindowMin = parseInt(env.DEDUP_WINDOW_MIN, 10);
 
   // Fetch nowcast and load persisted state in parallel
-  const [series, state] = await Promise.all([
+  const [nowcast, state] = await Promise.all([
     fetchNowcast(env.LAT, env.LON),
     loadState(env.RAIN_STATE),
   ]);
 
+  const series = nowcast.series;
   const now = new Date();
   const currentRate = series[0]?.precipRate ?? 0;
   const isRainingNow = currentRate > threshold;
+  let decision = isRainingNow ? "raining_now" : "dry_now";
 
   let notification: NotificationPayload | null = null;
 
@@ -132,6 +166,9 @@ async function checkRain(env: Env): Promise<void> {
         tags: ["partly_sunny_rain"],
         priority: "default",
       };
+      decision = "rain_stopping_notification";
+    } else {
+      decision = dryWindow ? "rain_stopping_duplicate" : "no_dry_window";
     }
   } else {
     // Currently dry — look for upcoming rain
@@ -146,6 +183,9 @@ async function checkRain(env: Env): Promise<void> {
         tags: ["rain_cloud"],
         priority: "high",
       };
+      decision = "rain_starting_notification";
+    } else {
+      decision = rainStart ? "rain_starting_duplicate" : "no_rain_forecast";
     }
   }
 
@@ -153,6 +193,19 @@ async function checkRain(env: Env): Promise<void> {
   const newState: PersistedState = {
     wasRaining: isRainingNow,
     lastNotifications: { ...state.lastNotifications },
+    diagnostics: {
+      ...state.diagnostics,
+      lastCheckedAt: now.toISOString(),
+      lastErrorAt: undefined,
+      lastError: undefined,
+      lastForecastUpdatedAt: nowcast.updatedAt,
+      lastSeriesStart: series[0]?.time.toISOString(),
+      lastSeriesEnd: series.at(-1)?.time.toISOString(),
+      lastCurrentRate: currentRate,
+      lastThreshold: threshold,
+      lastDecision: decision,
+      lastNotificationType: notification?.type,
+    },
   };
 
   if (notification) {
@@ -161,13 +214,31 @@ async function checkRain(env: Env): Promise<void> {
   }
 
   await saveState(env.RAIN_STATE, newState);
+
+  console.log(JSON.stringify({
+    event: "rain_check",
+    checkedAt: now.toISOString(),
+    forecastUpdatedAt: nowcast.updatedAt,
+    currentRate,
+    threshold,
+    decision,
+    notificationType: notification?.type ?? null,
+  }));
+
+  return {
+    checkedAt: now.toISOString(),
+    currentRate,
+    threshold,
+    decision,
+    notificationType: notification?.type ?? null,
+  };
 }
 
 // ---------------------------------------------------------------------------
 // Nowcast API
 // ---------------------------------------------------------------------------
 
-async function fetchNowcast(lat: string, lon: string): Promise<Timestep[]> {
+async function fetchNowcast(lat: string, lon: string): Promise<{ updatedAt: string; series: Timestep[] }> {
   const url = `https://api.met.no/weatherapi/nowcast/2.0/complete?lat=${lat}&lon=${lon}`;
   const resp = await fetch(url, {
     headers: {
@@ -182,14 +253,17 @@ async function fetchNowcast(lat: string, lon: string): Promise<Timestep[]> {
   const data = (await resp.json()) as NowcastResponse;
   const now = Date.now();
 
-  return data.properties.timeseries.map((ts) => {
-    const time = new Date(ts.time);
-    return {
-      time,
-      minutesFromNow: (time.getTime() - now) / 60_000,
-      precipRate: ts.data.instant.details.precipitation_rate ?? 0,
-    };
-  });
+  return {
+    updatedAt: data.properties.meta.updated_at,
+    series: data.properties.timeseries.map((ts) => {
+      const time = new Date(ts.time);
+      return {
+        time,
+        minutesFromNow: (time.getTime() - now) / 60_000,
+        precipRate: ts.data.instant.details.precipitation_rate ?? 0,
+      };
+    }),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -251,6 +325,43 @@ async function loadState(kv: KVNamespace): Promise<PersistedState> {
 
 async function saveState(kv: KVNamespace, state: PersistedState): Promise<void> {
   await kv.put(STATE_KEY, JSON.stringify(state));
+}
+
+async function recordCheckError(env: Env, err: unknown): Promise<void> {
+  const now = new Date().toISOString();
+  const message = stringifyError(err);
+
+  try {
+    const state = await loadState(env.RAIN_STATE);
+    await saveState(env.RAIN_STATE, {
+      ...state,
+      diagnostics: {
+        ...state.diagnostics,
+        lastCheckedAt: now,
+        lastErrorAt: now,
+        lastError: message,
+        lastDecision: "error",
+      },
+    });
+  } catch (stateErr) {
+    console.error(JSON.stringify({
+      event: "rain_check_error_state_write_failed",
+      checkedAt: now,
+      error: stringifyError(stateErr),
+      originalError: message,
+    }));
+  }
+
+  console.error(JSON.stringify({
+    event: "rain_check_error",
+    checkedAt: now,
+    error: message,
+  }));
+}
+
+function stringifyError(err: unknown): string {
+  if (err instanceof Error) return `${err.name}: ${err.message}`;
+  return String(err);
 }
 
 // ---------------------------------------------------------------------------
